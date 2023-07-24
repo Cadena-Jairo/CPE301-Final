@@ -12,11 +12,20 @@ volatile unsigned char* port_F = (unsigned char*) 0x31;
 volatile unsigned char* ddr_F  = (unsigned char*) 0x30; 
 volatile unsigned char* pin_F  = (unsigned char*) 0x2F; 
 
-volatile uint8_t* port_E = (volatile uint8_t*)0x2E;
-volatile uint8_t* ddr_E = (volatile uint8_t*)0x2D;
+volatile unsigned char* port_G = (unsigned char*)0x34;
+volatile unsigned char* ddr_G = (unsigned char*)0x33;
 
-volatile uint8_t* port_G = (volatile uint8_t*)0x34;
-volatile uint8_t* ddr_G = (volatile uint8_t*)0x33;
+volatile unsigned char* port_E = (unsigned char*)0x2E;
+volatile unsigned char* ddr_E = (unsigned char*)0x2D;
+volatile unsigned char* pin_E = (unsigned char*)0x2C;
+
+volatile unsigned char* port_H = (unsigned char*)0x102;
+volatile unsigned char* ddr_H = (unsigned char*)0x101;
+volatile unsigned char* pin_H = (unsigned char*)0x100;
+
+volatile unsigned char* port_K = (unsigned char*) 0x108; 
+volatile unsigned char* ddr_K  = (unsigned char*) 0x107;
+
 
 //Analog
 volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
@@ -42,9 +51,9 @@ volatile unsigned char *myUCSR0C = (unsigned char *)0x00C2;
 volatile unsigned int  *myUBRR0  = (unsigned int *) 0x00C4;
 volatile unsigned char *myUDR0   = (unsigned char *)0x00C6;
 
- //add inturope
- 
 
+unsigned int currentTicks = 65535;
+unsigned char timer_running = 0;
 
 const int rs = 7, en = 8, d4 = 9, d5 = 10, d6 = 11, d7 = 12;
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
@@ -59,8 +68,9 @@ float pitchOutput, rollOutput;
 long loop_timer;
 int temp;
 
+int lastPin1State, lastPin2State;
+
 void setup() {
-  // set up the LCD's number of columns and rows:
     U0init(9600);
     lcd.begin(20, 4);
     adc_init();
@@ -70,6 +80,25 @@ void setup() {
     *ddr_G |= (1 << 5); // Set bit 5 of Port G as output (dir1Pin)
     *ddr_E |= (1 << 5); // Set bit 5 of Port E as output (dir2Pin)
 
+    //buttons input
+    *ddr_E &= ~(0x01 << 4);
+    *ddr_H &= ~(0x01 << 3);
+  
+    //LED output
+    *ddr_K |= (0x01 << 7);
+    *ddr_K |= (0x01 << 6);
+    *ddr_K |= (0x01 << 5);
+    *ddr_K |= (0x01 << 4);
+  
+     //button pull-ups
+    *port_E |= (0x01 << 4);
+    *port_H |= (0x01 << 3);
+  
+    *port_K |= (0x01 << 4); //red LED on
+
+     //interuope
+    *ddr_K |= (1 << 2);
+    *port_K &= ~(1 << 2);
 
   //pin A1 in Analog output(GPIO) PF1
     *ddr_F |= (0x01 << 1);
@@ -89,94 +118,118 @@ void setup() {
 }
 
 void loop() {
-    read_mpu_6050_data();
-    unsigned int sensorValue = adc_read(0);   
-    double voltage = sensorValue * (5.0 / 1023.0);
+  // read the pushbutton input pin:
+  int pin1State = (*pin_E & (0x01 << 4));
+  int pin2State = (*pin_H & (0x01 << 3));
 
-    char charValue1 = (((temp/ 340.0 + 36.53) / 10) + '0'); // Get the first digit
-    char charValue2 = (((int)(temp/ 340.0 + 36.53) % 10) + '0');
+  if (pin1State == 0 && lastPin1State != 0 && pin2State != 0)
+  {
+    *port_K |= (0x01 << 6); // Blue the LED on
+    
+    do{ 
+      *port_K |= (0x01 << 7); // Turn on the LED (PB7)
+      *port_K &= ~(0x01 << 4); //red LED off
+  
+        read_mpu_6050_data();
+        unsigned int sensorValue = adc_read(0);   
+        double voltage = sensorValue * (5.0 / 1023.0);
+    
+        char charValue1 = (((temp/ 340.0 + 36.53) / 10) + '0'); // Get the first digit
+        char charValue2 = (((int)(temp/ 340.0 + 36.53) % 10) + '0'); //get the Second digit
+    
+        //prints temps of the acclerometer to serial motitor
+        U0putchar('T');U0putchar('e');U0putchar('m');U0putchar('p'); U0putchar(':'); U0putchar(' '); U0putchar(charValue1); U0putchar(charValue2); U0putchar('\n');
+        
+        
+        gyroX -= gyroXcalc;                                                
+        gyroY -= gyroYcalc;                                                
+        gyroZ -= gyroZcalc;                                                
+                  
+        pitch += gyroX * 0.0000611;                                  
+    
+        roll += gyroY * 0.0000611;                   
+     
+        pitch += roll * sin(gyroZ * 0.000001066);              
+        roll -= pitch * sin(gyroZ * 0.000001066);               
 
-    //prints temps of the acclerometer to serial motitor
-    U0putchar('T');U0putchar('e');U0putchar('m');U0putchar('p'); U0putchar(':'); U0putchar(' '); U0putchar(charValue1); U0putchar(charValue2); U0putchar('\n');
+        //Accelerometer angle calculations
+        accTotalVector = sqrt((accX*accX)+(accY*accY)+(accZ*accZ));  
+     
+        anglePitchAcc = asin((float)accY/accTotalVector)* 57.296;       //Calculate the pitch angle
+     
+        angleRollAcc = asin((float)accX/accTotalVector)* -57.296;       //Calculate the roll angle
+      
+        anglePitchAcc -= 0.00;                                              //Accelerometer calibration value for pitch
+        angleRollAcc -= 0.0;                                               //Accelerometer calibration value for roll
+    
+        if(gyroFlag){                                                 
+          pitch = pitch * 0.9996 + anglePitchAcc * 0.0004;     
+      
+          roll = roll * 0.9996 + angleRollAcc * 0.0004;     
+        }
+        else
+        {                                                            //At first start
+          pitch = anglePitchAcc;                 //Set the gyro pitch angle equal to the accelerometer pitch angle 
+          roll = angleRollAcc;                     //Set the gyro roll angle equal to the accelerometer roll angle 
+          gyroFlag = true;                              //Set the IMU started flag
+        }
+      
+        pitchOutput = pitchOutput * 0.9 + pitch * 0.1;   
+        rollOutput = rollOutput * 0.9 + roll * 0.1;
+        
+    
+        // set the cursor to column 0, line 1
+        // (note: line 1 is the second row, since counting begins with 0):
+        *pin_F = voltage;
+        lcd.setCursor(0, 0);
+        //Pitch
+        lcd.print("P:");
+        lcd.print(pitchOutput);
+        lcd.setCursor(8, 0);
+    
+        //roll
+        lcd.print("R:");
+        lcd.print(rollOutput);
+        
+        lcd.setCursor(0, 1);
+        lcd.print("ADC Voltage: ");
+        lcd.print(voltage);
+        lcd.print(" V");
     
     
-    gyroX -= gyroXcalc;                                                
-    gyroY -= gyroYcalc;                                                
-    gyroZ -= gyroZcalc;                                                
-         
-    //Gyro angle calculations . Note 0.0000611 = 1 / (250Hz x 65.5)
- 
-    pitch += gyroX * 0.0000611;                                  
-
-    roll += gyroY * 0.0000611;                   
- 
-    pitch += roll * sin(gyroZ * 0.000001066);               //If the IMU has yawed transfer the roll angle to the pitch angel
-    roll -= pitch * sin(gyroZ * 0.000001066);               //If the IMU has yawed transfer the pitch angle to the roll angel
-  
-    //Accelerometer angle calculations
-  
-    accTotalVector = sqrt((accX*accX)+(accY*accY)+(accZ*accZ));  
- 
-    anglePitchAcc = asin((float)accY/accTotalVector)* 57.296;       //Calculate the pitch angle
- 
-    angleRollAcc = asin((float)accX/accTotalVector)* -57.296;       //Calculate the roll angle
-  
-    anglePitchAcc -= 0.0;                                              //Accelerometer calibration value for pitch
-    angleRollAcc -= 0.0;                                               //Accelerometer calibration value for roll
-
-    if(gyroFlag){                                                 
-      pitch = pitch * 0.9996 + anglePitchAcc * 0.0004;     
-  
-      roll = roll * 0.9996 + angleRollAcc * 0.0004;     
-    }
-    else
-    {                                                            //At first start
-      pitch = anglePitchAcc;                 //Set the gyro pitch angle equal to the accelerometer pitch angle 
-      roll = angleRollAcc;                     //Set the gyro roll angle equal to the accelerometer roll angle 
-      gyroFlag = true;                              //Set the IMU started flag
-    }
-  
-    pitchOutput = pitchOutput * 0.9 + pitch * 0.1;   
-    rollOutput = rollOutput * 0.9 + roll * 0.1;
+        //temp check so if higher than 29 then it will turn on "fan" (motor)
+        if((int)(temp/ 340.0 + 36.53) > 29)
+        {
+          *port_G |= (1 << 5);  // dir1Pin to HIGH
+          *port_E &= ~(1 << 5); // dir2Pin to LOW
     
-
-    // set the cursor to column 0, line 1
-    // (note: line 1 is the second row, since counting begins with 0):
-    *pin_F = voltage;
-    lcd.setCursor(0, 0);
-    //Pitch
-    lcd.print("P:");
-    lcd.print(pitchOutput);
-    lcd.setCursor(8, 0);
-
-    //roll
-    lcd.print("R:");
-    lcd.print(rollOutput);
+          *port_E |= (1 << 3);
     
-    lcd.setCursor(0, 1);
-    lcd.print("ADC Voltage: ");
-    lcd.print(voltage);
-    lcd.print(" V");
+          *port_K |= (0x01 << 5); // Yellow the LED on
+    
+        }
+        else //turns off when its below 29
+        {
+          *port_G &= ~(1 << 5);  // dir1Pin to low
+          *port_E |= (1 << 5); // dir2Pin to high
+    
+          // Set motor speed using PWM 
+          *port_E &= ~(1 << 3);
+    
+          *port_K &= ~(0x01 << 5); // Yellow the LED off
+        }
+    }while(*pin_H & (0x01 << 3));
+  }
+  else if (pin2State == 0 && lastPin2State != 0 && pin1State != 0)
+  {
+    *port_K &= ~(0x01 << 7); // Turn off the LED (PB7)
+    *port_K |= (0x01 << 4); //red LED on
+    *port_K &= ~(0x01 << 6); //Blue light off
+  }
 
+  lastPin1State = pin1State;
+  lastPin2State = pin2State;
 
-    //temp check so if higher than 29 then it will turn on "fan" (motor)
-    if((int)(temp/ 340.0 + 36.53) > 29)
-    {
-      *port_G |= (1 << 5);  // Set bit 5 of Port G (dir1Pin) to HIGH
-      *port_E &= ~(1 << 5); // Set bit 5 of Port E (dir2Pin) to LOW
-
-      *port_E |= (1 << 3);
-    }
-    else //turns off when its below 29
-    {
-      *port_G &= ~(1 << 5);  // Set bit 5 of Port G (dir1Pin) to low
-      *port_E |= (1 << 5); // Set bit 5 of Port E (dir2Pin) to high
-
-      // Set motor speed using PWM 
-      *port_E &= ~(1 << 3);
-    }
-
-    my_delay(1000);
 }
 
 
@@ -208,8 +261,6 @@ void U0putchar(unsigned char U0pdata)
 }
 
 
-
-
 //timer
 void my_delay(unsigned int freq)
 {
@@ -231,54 +282,57 @@ void my_delay(unsigned int freq)
   // wait for overflow
   while((*myTIFR1 & 0x01)==0); // 0b 0000 0000
   // stop the timer
-  *myTCCR1B &= 0xF8;   // 0b 0000 0000
-  // reset TOV           
+  *myTCCR1B &= 0xF8;   
   *myTIFR1 |= 0x01;
 }
-
-
-
 
 
 //Analog
 void adc_init()
 {
-  // setup the A register
-  *my_ADCSRA |= 0b10000000; // set bit   7 to 1 to enable the ADC
-  *my_ADCSRA &= 0b11011111; // clear bit 6 to 0 to disable the ADC trigger mode
-  *my_ADCSRA &= 0b11110111; // clear bit 5 to 0 to disable the ADC interrupt
-  *my_ADCSRA &= 0b11111000; // clear bit 0-2 to 0 to set prescaler selection to slow reading
-  // setup the B register
-  *my_ADCSRB &= 0b11110111; // clear bit 3 to 0 to reset the channel and gain bits
-  *my_ADCSRB &= 0b11111000; // clear bit 2-0 to 0 to set free running mode
-  // setup the MUX Register
-  *my_ADMUX  &= 0b01111111; // clear bit 7 to 0 for AVCC analog reference
-  *my_ADMUX  |= 0b01000000; // set bit   6 to 1 for AVCC analog reference
-  *my_ADMUX  &= 0b11011111; // clear bit 5 to 0 for right adjust result
-  *my_ADMUX  &= 0b11100000; // clear bit 4-0 to 0 to reset the channel and gain bits
+  *my_ADCSRA |= 0b10000000; 
+  *my_ADCSRA &= 0b11011111; 
+  *my_ADCSRA &= 0b11110111; 
+  *my_ADCSRA &= 0b11111000;
+
+  *my_ADCSRB &= 0b11110111; 
+  *my_ADCSRB &= 0b11111000; 
+
+  *my_ADMUX  &= 0b01111111; 
+  *my_ADMUX  |= 0b01000000; 
+  *my_ADMUX  &= 0b11011111; 
+  *my_ADMUX  &= 0b11100000; 
 }
 unsigned int adc_read(unsigned char adc_channel_num)
 {
-  // clear the channel selection bits (MUX 4:0)
   *my_ADMUX  &= 0b11100000;
-  // clear the channel selection bits (MUX 5)
   *my_ADCSRB &= 0b11110111;
-  // set the channel number
   if(adc_channel_num > 7)
   {
-    // set the channel selection bits, but remove the most significant bit (bit 3)
     adc_channel_num -= 8;
-    // set MUX bit 5
     *my_ADCSRB |= 0b00001000;
   }
-  // set the channel selection bits
   *my_ADMUX  += adc_channel_num;
-  // set bit 6 of ADCSRA to 1 to start a conversion
   *my_ADCSRA |= 0x40;
-  // wait for the conversion to complete
   while((*my_ADCSRA & 0x40) != 0);
-  // return the result in the ADC data register
   return *my_ADC_DATA;
+}
+
+// TIMER OVERFLOW ISR
+ISR(TIMER1_OVF_vect)
+{
+  // Stop the Timer
+  *myTCCR1B &= 0xF8;
+  // Load the Count
+  *myTCNT1 =  (unsigned int) (65535 -  (unsigned long) (currentTicks));
+  // Start the Timer
+  *myTCCR1B |= 0x01;
+  // if it's not the STOP amount
+  if(currentTicks != 65535)
+  {
+    // XOR to toggle PB6
+    *port_K ^= (1 << 2);
+  }
 }
 
 
